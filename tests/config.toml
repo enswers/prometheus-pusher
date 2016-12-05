@@ -1,0 +1,14 @@
+[config]
+pushgateway_url = "http://localhost:9091" # Default
+pushgateway_username = "guri"
+pushgateway_password = "1234"
+push_interval = 60                        # Default (in seconds)
+
+[metric_name]
+host = "localhost" # Default
+path = "/metrics"  # Default
+ssl = false        # Default
+port = 9111
+
+[second_metric]
+port = 9112

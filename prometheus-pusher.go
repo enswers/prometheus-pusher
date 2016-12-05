@@ -17,9 +17,11 @@ import (
 )
 
 type pusherConfig struct {
-	PushGatewayURL string
-	PushInterval   time.Duration
-	Metrics        []metricConfig
+	PushGatewayURL      string
+	PushGatewayUsername string
+	PushGatewayPassword string
+	PushInterval        time.Duration
+	Metrics             []metricConfig
 }
 
 type metricConfig struct {
@@ -36,7 +38,7 @@ func main() {
 
 	logger = log.New("prometheus-pusher")
 
-	pusher, err := parseConfig(*path)
+	config, err := parseConfig(*path)
 	if err != nil {
 		logger.Error("Error parsing configuration", err.Error())
 	}
@@ -44,17 +46,17 @@ func main() {
 	hostname := fqdn.Get()
 	logger.Info("Starting prometheus-pusher", "instance_name", hostname)
 
-	for _, metric := range pusher.Metrics {
-		go getAndPush(metric.Name, metric.URL, pusher.PushGatewayURL, hostname, dummy)
+	for _, metric := range config.Metrics {
+		go getAndPush(metric.Name, metric.URL, config, hostname, dummy)
 	}
-	for _ = range time.Tick(pusher.PushInterval) {
-		pusher, err := parseConfig(*path)
+	for _ = range time.Tick(config.PushInterval) {
+		config, err := parseConfig(*path)
 		if err != nil {
 			logger.Error("Error parsing configuration", err.Error())
 		}
 
-		for _, metric := range pusher.Metrics {
-			go getAndPush(metric.Name, metric.URL, pusher.PushGatewayURL, hostname, dummy)
+		for _, metric := range config.Metrics {
+			go getAndPush(metric.Name, metric.URL, config, hostname, dummy)
 		}
 	}
 }
@@ -87,9 +89,11 @@ func getConfigFiles(path string) []string {
 
 func parseConfig(path string) (pusherConfig, error) {
 	conf := pusherConfig{
-		PushGatewayURL: "http://localhost:9091",
-		PushInterval:   time.Duration(60 * time.Second),
-		Metrics:        []metricConfig{},
+		PushGatewayURL:      "http://localhost:9091",
+		PushGatewayUsername: "",
+		PushGatewayPassword: "",
+		PushInterval:        time.Duration(60 * time.Second),
+		Metrics:             []metricConfig{},
 	}
 
 	for _, file := range getConfigFiles(path) {
@@ -105,6 +109,14 @@ func parseConfig(path string) (pusherConfig, error) {
 
 				if tomlFile["config.pushgateway_url"].IsValue() {
 					conf.PushGatewayURL = tomlFile["config.pushgateway_url"].String()
+				}
+
+				if tomlFile["config.pushgateway_username"].IsValue() {
+					conf.PushGatewayUsername = tomlFile["config.pushgateway_username"].String()
+				}
+
+				if tomlFile["config.pushgateway_password"].IsValue() {
+					conf.PushGatewayPassword = tomlFile["config.pushgateway_password"].String()
 				}
 
 				if tomlFile["config.push_interval"].IsValue() {
@@ -170,19 +182,33 @@ func getMetrics(metricURL string) []byte {
 	return body
 }
 
-func pushMetrics(metricName string, pushgatewayURL string, instance string, metrics []byte, dummy *bool) {
-	postURL := fmt.Sprintf("%s/metrics/job/%s/instance/%s", pushgatewayURL, metricName, instance)
+func pushMetrics(metricName string, config pusherConfig, instance string, metrics []byte, dummy *bool) {
+	postURL := fmt.Sprintf("%s/metrics/job/%s/instance/%s", config.PushGatewayURL, metricName, instance)
 	if *dummy {
 		fmt.Println(string(metrics))
 	} else {
 		logger.Info("Pushing Node exporter metrics", "endpoint", postURL)
 
 		data := bytes.NewReader(metrics)
-		resp, err := http.Post(postURL, "text/plain", data)
+		client := &http.Client{}
+
+		req, err := http.NewRequest("POST", postURL, data)
 		if err != nil {
 			logger.Error(err.Error(), "error", err)
 			return
 		}
+
+		req.Header.Add("Content-Type", "text/plain")
+		if len(config.PushGatewayUsername) > 0 && len(config.PushGatewayPassword) > 0 {
+			req.SetBasicAuth(config.PushGatewayUsername, config.PushGatewayPassword)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			logger.Error(err.Error(), "error", err)
+			return
+		}
+
 		defer resp.Body.Close() // FIXME: no need to close on error?
 	}
 }
@@ -223,8 +249,8 @@ func addTimestamps(metrics []byte) (timestampedMetrics []byte) {
 	return
 }
 
-func getAndPush(metricName string, metricURL string, pushgatewayURL string, instance string, dummy *bool) {
+func getAndPush(metricName string, metricURL string, config pusherConfig, instance string, dummy *bool) {
 	if metrics := getMetrics(metricURL); metrics != nil {
-		pushMetrics(metricName, pushgatewayURL, instance, addTimestamps(metrics), dummy)
+		pushMetrics(metricName, config, instance, addTimestamps(metrics), dummy)
 	}
 }
